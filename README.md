@@ -47,6 +47,8 @@ contract between them.
 - `.pipeline/` is added to `.git/info/exclude`, so handoff files are never committed.
 
 ## Install
+Also listed (free) on Agensi: https://www.agensi.io/skills/ship-5-agent-feature-pipeline-for-claude-code
+
 ```bash
 git clone <this-repo> && cd claude-ship-pipeline
 ./install.sh            # all repos (~/.claude)
