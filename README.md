@@ -1,73 +1,104 @@
-# /ship — a 5-agent feature pipeline for Claude Code
+# /ship — a feature pipeline for Claude Code
 
-One command takes a feature request through **plan → code → test → review → docs**,
-each stage run by a specialist subagent with a clean context, handing off through
-files in `.pipeline/`. It ends with a **local commit on a feature branch** — it never
-pushes, merges or deploys. You review in the morning.
+One command takes a feature request through **requirements → plan → tests first →
+code → review → docs**, each stage run by a specialist subagent with a clean context,
+handing off through files. It ends with a **local commit on a feature branch** in its
+own git worktree. It never pushes, merges or deploys, and it never touches your own
+checkout.
 
 ```mermaid
 flowchart LR
-    U["/ship &lt;feature&gt;"] --> P["Planner<br/>(opus)<br/>spec.md"]
-    P -->|open questions?| STOP1(("stop &amp; ask"))
-    P --> C["Coder<br/>(sonnet)<br/>changes.md"]
-    C --> T["Tester<br/>(sonnet)<br/>test-results.md"]
-    T -->|FAIL| STOP2(("stop &amp; show"))
-    T --> R["Reviewer<br/>(opus, read-only)<br/>review.md"]
-    R -->|NEEDS WORK / BLOCK| STOP3(("stop &amp; list fixes"))
-    R -->|SHIP| D["Documenter<br/>(sonnet)<br/>docs/ + docs.md"]
-    D --> G["local commit<br/>on feat/* branch"]
+    U["/ship &lt;feature&gt;"] --> A["Analyst (opus)<br/>writes or reviews the PRD"]
+    A --> G1(("you approve<br/>the PRD"))
+    G1 --> P["Planner (opus)<br/>spec.md"]
+    P --> G2(("you approve<br/>the spec"))
+    G2 --> R1["Tester RED (sonnet)<br/>failing tests"]
+    R1 --> C["Coder (sonnet; opus if risky)<br/>makes them pass"]
+    C --> R2["Tester GREEN (sonnet)"]
+    R2 -->|FAIL| I1["Investigator<br/>root cause"] --> S1(("you decide"))
+    R2 --> V["Reviewer (opus, read-only)<br/>VERDICT"]
+    V -->|NEEDS WORK| I2["Investigator<br/>triage findings"] --> S2(("you decide"))
+    V -->|SHIP| D["Documenter (sonnet)<br/>guide + diagrams + OpenAPI"]
+    D --> K["local commit<br/>on feat/* in its worktree"]
 ```
 
-## Why a pipeline instead of one agent
-One agent doing planning, coding, testing and review fills its context until quality
-drops. Five specialists each keep a narrow context, and the **handoff file** is the
-contract between them.
+A **Quick lane** (`/ship --quick ...`) skips the PRD, planner and approvals for small,
+low-risk changes: tests first → code → tests → review (sonnet) → light docs → commit.
 
-| Stage | Model | Can edit? | Output |
-|---|---|---|---|
-| Planner | opus | only its spec | `.pipeline/spec.md` — files, signatures, edge cases, patterns to copy, OPEN QUESTIONS |
-| Coder | sonnet | code | code + `.pipeline/changes.md` (starts with "Conventions followed") |
-| Tester | sonnet | tests only | tests + `.pipeline/test-results.md` (`RESULT: PASS/FAIL`) |
-| Reviewer | opus | **read-only** | `.pipeline/review.md` (`VERDICT: SHIP / NEEDS WORK / BLOCK`) |
-| Documenter | sonnet | `docs/` only | OpenAPI spec, feature doc, Mermaid diagrams, `.pipeline/docs.md` |
-
-## Guardrails
-- **Feature branch only.** On `main`/`dev`/`release/*` it branches to `feat/<slug>` first.
-  It never commits to, merges into, rebases, resets or pushes a protected branch.
-  Subagents can't run branch/commit commands at all — only the orchestrator can.
-- **Follows your codebase.** The Coder studies 2–3 similar existing features first
-  (layering, package layout, naming, DTO/error shapes) and writes them down. No new
-  API, controller, service, dependency or abstraction unless the spec requires it;
-  the Reviewer marks duplicates as NEEDS WORK.
-- **Stops instead of guessing.** Open questions in the spec, failing tests, or a
-  non-SHIP verdict all halt the pipeline and come back to you.
-- **Docs that match the code.** OpenAPI 3 spec under `docs/openapi/`, a "how it works"
-  doc under `docs/features/`, sequence + flow diagrams under `docs/diagrams/`. Any
-  non-doc file the Documenter touches is reverted.
-- `.pipeline/` is added to `.git/info/exclude`, so handoff files are never committed.
+## What makes it different
+- **Requirements first.** No PRD? The analyst writes one, verified against the real
+  code (`path:line`), with testable requirements and open questions answered from how
+  similar existing features already work. Have a PRD (`.md`, `.pdf`, `.docx`)? It is
+  reviewed against the code instead, and a validation report is saved next to it. A
+  PRD the analyst did not write is never overwritten.
+- **Tests before code.** The tester writes failing tests from the spec's success
+  criteria; the coder makes them pass and may not change them (checksummed).
+- **Parallel runs, your checkout untouched.** Every run gets its own git worktree
+  per repo (`<repo>-<feature>`, branched from a fresh `origin/dev` or `main`, with no
+  upstream) and its own run folder. Start as many runs as you like, from one session
+  or several.
+- **Multi-repo features.** Start in a folder that holds several repos; the planner
+  finds which ones the feature touches and you approve them at the spec gate.
+- **Hard guardrails, not just prompts.** Hooks in each agent's definition enforce:
+  - a tool guard: read-only git only, no ssh/remote hosts, no publishing or dependency
+    installs, no stage/prod profiles or databases, writes only inside the run's
+    worktrees (read-only agents cannot write through the shell at all);
+  - a stop gate: an agent cannot finish without its handoff file, written during this
+    run, with the right status line, and within size limits;
+  - an audit log of every allow/deny in the run folder.
+- **Deterministic bookkeeping.** Worktrees, snapshots, test checksums, the exact
+  commit set and PRD versioning go through `hooks/ship.py`, not through prompts.
+- **Developer docs from the final code.** A "how it works" guide (where to start
+  reading, how to change and test it, gotchas), Mermaid sequence/flow/ER diagrams and
+  the OpenAPI spec, written after review and redone if the code changes again.
+- **Per-repo rules.** `<repo>/.ship/constitution.md` (untracked) holds the repo's
+  non-negotiables; every agent reads it and confirmed review findings are added as
+  lessons.
+- **Token-aware.** The orchestrator reads only handoff headers; each agent has its own
+  model, effort, turn limit and compaction window; fix rounds are scoped to what
+  changed. Start each run in a fresh session.
 
 ## Install
 Also listed (free) on Agensi: https://www.agensi.io/skills/ship-5-agent-feature-pipeline-for-claude-code
 
 ```bash
-git clone <this-repo> && cd claude-ship-pipeline
-./install.sh            # all repos (~/.claude)
-./install.sh project    # only the current repo (./.claude)
+git clone https://github.com/Altafhossain72/claude-ship-pipeline && cd claude-ship-pipeline
+./install.sh      # copies agents, skill and hooks into ~/.claude, then runs the tests
 ```
-Restart Claude Code, then inside a git repo:
+Needs `python3` and git 2.25+. Restart Claude Code, then in a fresh session:
 ```
 /ship add rate limiting to the login endpoint
+/ship in api and billing: show remaining daily limit on the account summary
+/ship --quick in api: fix null pointer when nickname is empty
+/ship prd: "PRD - Standing Instructions.md" implement phase 1
 ```
 
-## Tips
-- Start with Planner + Coder only; add the other stages once that feels solid.
-- Swap models per stage in each agent's frontmatter (`model: opus|sonnet|haiku`).
-- Adjust the protected-branch list and docs paths in `skills/ship/SKILL.md`.
+## Configure
+- `~/.claude/ship.json`: `prd_prefix` is how your PRD files are named in the workspace
+  (default `PRD - `, e.g. `PRD - Standing Instructions.md`).
+- Models, effort and turn limits: each agent's frontmatter in `~/.claude/agents/`.
+- Protected branches and lane rules: `~/.claude/skills/ship/SKILL.md`.
+- Repo rules: edit `<repo>/.ship/constitution.md` (created on the first run).
+
+After a run, the worktree stays for your review; push from it when you are happy, and
+remove it later with `git worktree remove ../<repo>-<feature>`.
+
+## Files
+| Path | What |
+|---|---|
+| `skills/ship/SKILL.md` | the orchestrator (the `/ship` command) |
+| `agents/*.md` | analyst, planner, tester, coder, reviewer, documenter, investigator |
+| `hooks/ship.py` | run/worktree/snapshot/commit/PRD bookkeeping |
+| `hooks/ship-tool-guard.py` | PreToolUse guard for every pipeline agent |
+| `hooks/ship-handoff-gate.py` | SubagentStop gate (handoff file, status line, size) |
+| `hooks/ship-yaml-check.py` | read-only YAML check for the documenter |
+| `tests/hook-tests.sh` | 90 regression cases for the hooks and helper |
 
 ## Credits
-Based on the Planner → Coder → Tester → Reviewer pattern described by
-[@zodchiii](https://x.com/zodchiii/status/2060674246880149900); extended with the
-convention-following coder, feature-branch safety, documenter stage and stop gates.
+Started from the Planner → Coder → Tester → Reviewer pattern described by
+[@zodchiii](https://x.com/zodchiii/status/2060674246880149900). The `superpowers`
+plugin's systematic-debugging and receiving-code-review skills are used by the
+investigator when installed.
 
 ## License
 MIT
